@@ -16,8 +16,8 @@ erpnext.utils.get_party_details = function(frm, method, args, callback) {
 			|| (frm.doc.party_name && in_list(['Quotation', 'Opportunity'], frm.doc.doctype))) {
 
 			let party_type = "Customer";
-			if (frm.doc.quotation_to && frm.doc.quotation_to === "Lead") {
-				party_type = "Lead";
+			if (frm.doc.quotation_to && in_list(["Lead", "Prospect"], frm.doc.quotation_to)) {
+				party_type = frm.doc.quotation_to;
 			}
 
 			args = {
@@ -242,20 +242,29 @@ erpnext.utils.set_taxes = function(frm, triggered_from_field) {
 	});
 };
 
-erpnext.utils.get_contact_details = function(frm) {
+erpnext.utils.get_contact_details = function (frm) {
 	if (frm.updating_party_details) return;
 
 	if (frm.doc["contact_person"]) {
 		frappe.call({
 			method: "frappe.contacts.doctype.contact.contact.get_contact_details",
-			args: {contact: frm.doc.contact_person },
-			callback: function(r) {
-				if (r.message)
-					frm.set_value(r.message);
-			}
-		})
+			args: { contact: frm.doc.contact_person },
+			callback: function (r) {
+				if (r.message) frm.set_value(r.message);
+			},
+		});
+	} else {
+		frm.set_value({
+			contact_person: "",
+			contact_display: "",
+			contact_email: "",
+			contact_mobile: "",
+			contact_phone: "",
+			contact_designation: "",
+			contact_department: "",
+		});
 	}
-}
+};
 
 erpnext.utils.validate_mandatory = function(frm, label, value, trigger_on) {
 	if (!value) {

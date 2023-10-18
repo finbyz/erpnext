@@ -9,14 +9,32 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import map_child_doc, map_doc
 from frappe.utils import cint, flt, get_time, getdate, nowdate, nowtime
-from frappe.utils.background_jobs import enqueue, is_job_queued
+from frappe.utils.background_jobs import enqueue, is_job_enqueued
 from frappe.utils.scheduler import is_scheduler_inactive
+
+from erpnext.accounts.doctype.pos_profile.pos_profile import required_accounting_dimensions
 
 
 class POSInvoiceMergeLog(Document):
 	def validate(self):
 		self.validate_customer()
 		self.validate_pos_invoice_status()
+		self.validate_duplicate_pos_invoices()
+
+	def validate_duplicate_pos_invoices(self):
+		pos_occurences = {}
+		for idx, inv in enumerate(self.pos_invoices, 1):
+			pos_occurences.setdefault(inv.pos_invoice, []).append(idx)
+
+		error_list = []
+		for key, value in pos_occurences.items():
+			if len(value) > 1:
+				error_list.append(
+					_("{} is added multiple times on rows: {}".format(frappe.bold(key), frappe.bold(value)))
+				)
+
+		if error_list:
+			frappe.throw(error_list, title=_("Duplicate POS Invoices found"), as_list=True)
 
 	def validate_customer(self):
 		if self.merge_invoices_based_on == "Customer Group":
@@ -79,7 +97,6 @@ class POSInvoiceMergeLog(Document):
 			sales_invoice = self.process_merging_into_sales_invoice(sales)
 
 		self.save()  # save consolidated_sales_invoice & consolidated_credit_note ref in merge log
-
 		self.update_pos_invoices(pos_invoice_docs, sales_invoice, credit_note)
 
 	def on_cancel(self):
@@ -92,7 +109,6 @@ class POSInvoiceMergeLog(Document):
 
 	def process_merging_into_sales_invoice(self, data):
 		sales_invoice = self.get_new_sales_invoice()
-
 		sales_invoice = self.merge_pos_invoice_into(sales_invoice, data)
 
 		sales_invoice.is_consolidated = 1
@@ -168,6 +184,8 @@ class POSInvoiceMergeLog(Document):
 					item.base_amount = item.base_net_amount
 					item.price_list_rate = 0
 					si_item = map_child_doc(item, invoice, {"doctype": "Sales Invoice Item"})
+					if item.serial_and_batch_bundle:
+						si_item.serial_and_batch_bundle = item.serial_and_batch_bundle
 					items.append(si_item)
 
 			for tax in doc.get("taxes"):
@@ -223,6 +241,22 @@ class POSInvoiceMergeLog(Document):
 		invoice.disable_rounded_total = cint(
 			frappe.db.get_value("POS Profile", invoice.pos_profile, "disable_rounded_total")
 		)
+		accounting_dimensions = required_accounting_dimensions()
+		dimension_values = frappe.db.get_value(
+			"POS Profile", {"name": invoice.pos_profile}, accounting_dimensions, as_dict=1
+		)
+		for dimension in accounting_dimensions:
+			dimension_value = dimension_values.get(dimension)
+
+			if not dimension_value:
+				frappe.throw(
+					_("Please set Accounting Dimension {} in {}").format(
+						frappe.bold(frappe.unscrub(dimension)),
+						frappe.get_desk_link("POS Profile", invoice.pos_profile),
+					)
+				)
+
+			invoice.set(dimension, dimension_value)
 
 		if self.merge_invoices_based_on == "Customer Group":
 			invoice.flags.ignore_pos_profile = True
@@ -367,9 +401,10 @@ def split_invoices(invoices):
 		for d in invoices
 		if d.is_return and d.return_against
 	]
+
 	for pos_invoice in pos_return_docs:
 		for item in pos_invoice.items:
-			if not item.serial_no:
+			if not item.serial_no and not item.serial_and_batch_bundle:
 				continue
 
 			return_against_is_added = any(
@@ -408,11 +443,9 @@ def create_merge_logs(invoice_by_customer, closing_entry=None):
 				)
 				merge_log.customer = customer
 				merge_log.pos_closing_entry = closing_entry.get("name") if closing_entry else None
-
 				merge_log.set("pos_invoices", _invoices)
 				merge_log.save(ignore_permissions=True)
 				merge_log.submit()
-
 		if closing_entry:
 			closing_entry.set_status(update=True, status="Submitted")
 			closing_entry.db_set("error_message", "")
@@ -425,12 +458,14 @@ def create_merge_logs(invoice_by_customer, closing_entry=None):
 
 		if closing_entry:
 			closing_entry.set_status(update=True, status="Failed")
+			if type(error_message) == list:
+				error_message = frappe.json.dumps(error_message)
 			closing_entry.db_set("error_message", error_message)
 		raise
 
 	finally:
 		frappe.db.commit()
-		frappe.publish_realtime("closing_process_complete", {"user": frappe.session.user})
+		frappe.publish_realtime("closing_process_complete", user=frappe.session.user)
 
 
 def cancel_merge_logs(merge_logs, closing_entry=None):
@@ -457,7 +492,7 @@ def cancel_merge_logs(merge_logs, closing_entry=None):
 
 	finally:
 		frappe.db.commit()
-		frappe.publish_realtime("closing_process_complete", {"user": frappe.session.user})
+		frappe.publish_realtime("closing_process_complete", user=frappe.session.user)
 
 
 def enqueue_job(job, **kwargs):
@@ -465,15 +500,15 @@ def enqueue_job(job, **kwargs):
 
 	closing_entry = kwargs.get("closing_entry") or {}
 
-	job_name = closing_entry.get("name")
-	if not is_job_queued(job_name):
+	job_id = "pos_invoice_merge::" + str(closing_entry.get("name"))
+	if not is_job_enqueued(job_id):
 		enqueue(
 			job,
 			**kwargs,
 			queue="long",
 			timeout=10000,
 			event="processing_merge_logs",
-			job_name=job_name,
+			job_id=job_id,
 			now=frappe.conf.developer_mode or frappe.flags.in_test
 		)
 

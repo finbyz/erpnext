@@ -70,9 +70,6 @@ class Company(NestedSet):
 
 		self.abbr = self.abbr.strip()
 
-		# if self.get('__islocal') and len(self.abbr) > 5:
-		# 	frappe.throw(_("Abbreviation cannot have more than 5 characters"))
-
 		if not self.abbr.strip():
 			frappe.throw(_("Abbreviation is mandatory"))
 
@@ -207,15 +204,14 @@ class Company(NestedSet):
 		frappe.local.flags.ignore_root_company_validation = True
 		create_charts(self.name, self.chart_of_accounts, self.existing_company)
 
-		frappe.db.set(
-			self,
+		self.db_set(
 			"default_receivable_account",
 			frappe.db.get_value(
 				"Account", {"company": self.name, "account_type": "Receivable", "is_group": 0}
 			),
 		)
-		frappe.db.set(
-			self,
+
+		self.db_set(
 			"default_payable_account",
 			frappe.db.get_value(
 				"Account", {"company": self.name, "account_type": "Payable", "is_group": 0}
@@ -407,14 +403,20 @@ class Company(NestedSet):
 				self._set_default_account(default_account, default_accounts.get(default_account))
 
 		if not self.default_income_account:
-			income_account = frappe.db.get_value(
-				"Account", {"account_name": _("Sales"), "company": self.name, "is_group": 0}
+			income_account = frappe.db.get_all(
+				"Account",
+				filters={"company": self.name, "is_group": 0},
+				or_filters={
+					"account_name": ("in", [_("Sales"), _("Sales Account")]),
+					"account_type": "Income Account",
+				},
+				pluck="name",
 			)
 
-			if not income_account:
-				income_account = frappe.db.get_value(
-					"Account", {"account_name": _("Sales Account"), "company": self.name}
-				)
+			if income_account:
+				income_account = income_account[0]
+			else:
+				income_account = None
 
 			self.db_set("default_income_account", income_account)
 
@@ -491,12 +493,12 @@ class Company(NestedSet):
 				cc_doc.flags.ignore_mandatory = True
 			cc_doc.insert()
 
-		frappe.db.set(self, "cost_center", _("Main") + " - " + self.abbr)
-		frappe.db.set(self, "round_off_cost_center", _("Main") + " - " + self.abbr)
-		frappe.db.set(self, "depreciation_cost_center", _("Main") + " - " + self.abbr)
+		self.db_set("cost_center", _("Main") + " - " + self.abbr)
+		self.db_set("round_off_cost_center", _("Main") + " - " + self.abbr)
+		self.db_set("depreciation_cost_center", _("Main") + " - " + self.abbr)
 
 	def after_rename(self, olddn, newdn, merge=False):
-		frappe.db.set(self, "company_name", newdn)
+		self.db_set("company_name", newdn)
 
 		frappe.db.sql(
 			"""update `tabDefaultValue` set defvalue=%s
@@ -690,11 +692,11 @@ def get_children(doctype, parent=None, company=None, is_root=False):
 			name as value,
 			is_group as expandable
 		from
-			`tab{doctype}` comp
+			`tabCompany` comp
 		where
 			ifnull(parent_company, "")={parent}
 		""".format(
-			doctype=doctype, parent=frappe.db.escape(parent)
+			parent=frappe.db.escape(parent)
 		),
 		as_dict=1,
 	)
@@ -812,7 +814,7 @@ def get_default_company_address(name, sort_key="is_primary_address", existing_ad
 			return existing_address
 
 	if out:
-		return min(out, key=lambda x: x[1])[0]  # find min by sort_key
+		return max(out, key=lambda x: x[1])[0]  # find max by sort_key
 	else:
 		return None
 

@@ -100,7 +100,7 @@ frappe.ui.form.on("Bank Statement Import", {
 
 		if (frm.doc.status.includes("Success")) {
 			frm.add_custom_button(
-				__("Go to {0} List", [frm.doc.reference_doctype]),
+				__("Go to {0} List", [__(frm.doc.reference_doctype)]),
 				() => frappe.set_route("List", frm.doc.reference_doctype)
 			);
 		}
@@ -352,10 +352,11 @@ frappe.ui.form.on("Bank Statement Import", {
 
 	export_errored_rows(frm) {
 		open_url_post(
-			"/api/method/frappe.core.doctype.data_import.data_import.download_errored_template",
+			"/api/method/erpnext.accounts.doctype.bank_statement_import.bank_statement_import.download_errored_template",
 			{
 				data_import_name: frm.doc.name,
-			}
+			},
+			true
 		);
 	},
 
