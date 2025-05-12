@@ -28,7 +28,8 @@ class EmailCampaign(Document):
 	# end: auto-generated types
 
 	def validate(self):
-		self.set_date()
+		if not self.end_date:
+			self.set_date()
 		# checking if email is set for lead. Not checking for contact as email is a mandatory field for contact.
 		if self.email_campaign_for == "Lead":
 			self.validate_lead()
